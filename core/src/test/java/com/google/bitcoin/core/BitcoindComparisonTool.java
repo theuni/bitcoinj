@@ -24,10 +24,12 @@ import com.google.bitcoin.store.H2FullPrunedBlockStore;
 import com.google.bitcoin.utils.BlockFileLoader;
 import com.google.bitcoin.utils.BriefLogFormatter;
 import com.google.bitcoin.utils.Threading;
+import com.google.common.base.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
+import java.io.IOException;
 import java.net.InetAddress;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -48,6 +50,10 @@ public class BitcoindComparisonTool {
     private static Sha256Hash bitcoindChainHead;
     private static volatile Peer bitcoind;
     private static volatile InventoryMessage mostRecentInv = null;
+
+    static class BlockWrapper {
+        public Block block;
+    }
 
     public static void main(String[] args) throws Exception {
         BriefLogFormatter.init();
@@ -79,6 +85,8 @@ public class BitcoindComparisonTool {
         // bitcoind MUST be on localhost or we will get banned as a DoSer
         peers.addAddress(new PeerAddress(InetAddress.getByName("localhost"), args.length > 2 ? Integer.parseInt(args[2]) : params.getPort()));
 
+        final BlockWrapper currentBlock = new BlockWrapper();
+
         final Set<Sha256Hash> blocksRequested = Collections.synchronizedSet(new HashSet<Sha256Hash>());
         final AtomicInteger unexpectedInvs = new AtomicInteger(0);
         peers.addEventListener(new AbstractPeerEventListener() {
@@ -109,6 +117,13 @@ public class BitcoindComparisonTool {
                     for (InventoryItem item : ((GetDataMessage)m).items)
                         if (item.type == InventoryItem.Type.Block)
                             blocksRequested.add(item.hash);
+                    return null;
+                } else if (m instanceof GetHeadersMessage) {
+                    try {
+                        bitcoind.sendMessage(new HeadersMessage(params, currentBlock.block.cloneAsHeader()));
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
                     return null;
                 } else if (m instanceof InventoryMessage) {
                     if (mostRecentInv != null) {
@@ -171,6 +186,8 @@ public class BitcoindComparisonTool {
                 BlockAndValidity block = (BlockAndValidity) rule;
                 boolean threw = false;
                 Block nextBlock = blocks.next();
+                currentBlock.block = nextBlock;
+                log.info("Testing block {}", currentBlock.block.getHash());
                 try {
                     if (chain.add(nextBlock) != block.connects) {
                         log.error("Block didn't match connects flag on block \"" + block.ruleName + "\"");
